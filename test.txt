@@ -1,0 +1,17 @@
+for each time stamp, mention data movements and other stats
+
+o 10 1 l0 (file 10.sst created in tier1, as level 0)
+c (10 11 12)1 (13 14)2 l3 (compaction from tier 1 to tier 2, as level 3)
+m 10 2 l3 (file 10 moved to tier2, as level3)
+h 10 1 (file 10 cached in tier1)
+e 10 1 (file 10 evicted from tier1)
+u 10 (file 10 unlinked, tier it was in)
+l 10 l3 (file 10 is now level3)
+10 12345 11 23456 13 34567 (files and their hotness)
+
+
+
+
+first chunk:
+
+
