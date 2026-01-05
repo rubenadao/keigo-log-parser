@@ -83,10 +83,28 @@ const readModsFromFile = (file) => {
     }
 
     modSequences.push(modSeq);
-    console.log(modSequences);
-    console.log('File processed');
 
-    return {'meta':{'exec_phase':exec_phase_index}, 'sequences' : modSequences};
+    // Build phases object in the format expected by the visualizer
+    const phases = {
+        "0": "PHASE1"
+    };
+    if (exec_phase_index !== undefined && exec_phase_index !== null) {
+        phases[exec_phase_index.toString()] = "PHASE2";
+    }
+
+    return {
+        'meta': {
+            'phases': phases,
+            'tiers': ['L0', 'L1', 'L2'],  // RocksDB levels
+            'cache': false,
+            'labels': {
+                '0': 0x00FF00,  // L0 - green
+                '1': 0x0000FF,  // L1 - blue
+                '2': 0xFF0000   // L2 - red
+            }
+        },
+        'sequences': modSequences
+    };
 }
 
 module.exports = {

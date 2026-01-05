@@ -5,7 +5,7 @@ class Sst {
     constructor(number) {
         this.x = 0;
         this.y = 0;
-        this.level = 0;
+        this.label = "0";
         this.side = sst_side
         this.number = number;
         this.tier = null;
@@ -14,6 +14,7 @@ class Sst {
         this.animating = false;
         
         this.hits = 0;
+        this.writes = 0;
 
         this.anim_xvector = 0;
         this.anim_yvector = 0;
