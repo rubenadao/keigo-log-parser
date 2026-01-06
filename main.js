@@ -3,9 +3,10 @@
  * Keigo Log Parser
  * Parses RocksDB visual profiler trace logs into JSON format for the Keigo visualizer.
  * 
- * Usage: node main.js <input_file> [output_file]
+ * Usage: node main.js <input_file> [output_file] [--phase <config_file> <perf_log_file>]...
  *   input_file  - Path to the trace log file
  *   output_file - Path for the output JSON (default: stdout)
+ *   --phase     - Optional phase data: config file and performance log file pair
  */
 
 const fs = require('fs');
@@ -20,24 +21,83 @@ function parseArgs() {
         console.log(`
 Keigo Log Parser - Parse RocksDB trace logs for visualization
 
-Usage: node main.js <input_file> [output_file]
+Usage: node main.js <input_file> [output_file] [--phase <config_file> <perf_log_file>]...
 
 Arguments:
   input_file   Path to the trace log file (required)
   output_file  Path for the output JSON file (optional, defaults to stdout)
+  --phase      Phase data pair: config file and performance log file (can be repeated)
 
 Examples:
   node main.js trace.log                    # Output to stdout
   node main.js trace.log output.json        # Output to file
-  node main.js trace.log ../keigo/src/traces/trace.json
+  node main.js trace.log output.json --phase loading.cfg loading_perf.log --phase exec.cfg exec_perf.log
 `);
         process.exit(args.length === 0 ? 1 : 0);
     }
     
+    let inputFile = null;
+    let outputFile = null;
+    const phaseFiles = []; // Array of { config: string, perfLog: string }
+    
+    let i = 0;
+    while (i < args.length) {
+        if (args[i] === '--phase') {
+            // Expect two arguments after --phase
+            if (i + 2 >= args.length) {
+                console.error('Error: --phase requires two arguments: <config_file> <perf_log_file>');
+                process.exit(1);
+            }
+            phaseFiles.push({
+                config: args[i + 1],
+                perfLog: args[i + 2]
+            });
+            i += 3;
+        } else if (!inputFile) {
+            inputFile = args[i];
+            i++;
+        } else if (!outputFile) {
+            outputFile = args[i];
+            i++;
+        } else {
+            console.error(`Error: Unexpected argument: ${args[i]}`);
+            process.exit(1);
+        }
+    }
+    
     return {
-        inputFile: args[0],
-        outputFile: args[1] || null
+        inputFile,
+        outputFile: outputFile || null,
+        phaseFiles
     };
+}
+
+// Read phase files and return array of phase data objects
+// Files are stored as arrays of lines for better JSON readability
+function readPhaseFiles(phaseFiles) {
+    return phaseFiles.map(({ config, perfLog }, index) => {
+        const phaseData = {
+            index,
+            config: null,
+            perfLog: null
+        };
+        
+        if (fs.existsSync(config)) {
+            const content = fs.readFileSync(config, 'utf-8');
+            phaseData.config = content.split('\n');
+        } else {
+            console.error(`Warning: Config file not found: ${config}`);
+        }
+        
+        if (fs.existsSync(perfLog)) {
+            const content = fs.readFileSync(perfLog, 'utf-8');
+            phaseData.perfLog = content.split('\n');
+        } else {
+            console.error(`Warning: Performance log file not found: ${perfLog}`);
+        }
+        
+        return phaseData;
+    });
 }
 
 // Tier and SST state
@@ -142,7 +202,25 @@ const modMap = {
         }
     },
     
-    'z': () => {} // Tier stats - no-op
+    'z': () => {}, // Tier stats - no-op
+    
+    // Block cache events - passed through to visualizer
+    'C': (line) => {
+        // C+ <sst> <offset> <size> <type> <key_hex>  - Block cache insert
+        // C- <key_hex> <was_hit>                      - Block cache eviction
+        // These are handled by the visualizer, parser just validates format
+        if (line.startsWith('C+ ')) {
+            const match = /C\+ (\d+) (\d+) (\d+) ([^ ]+) ([a-f0-9]+)/.exec(line);
+            if (!match) {
+                console.error(`Warning: Invalid C+ line format: ${line}`);
+            }
+        } else if (line.startsWith('C- ')) {
+            const match = /C- ([a-f0-9]+) ([01])/.exec(line);
+            if (!match) {
+                console.error(`Warning: Invalid C- line format: ${line}`);
+            }
+        }
+    }
 };
 
 // Process sequences to handle hit resets
@@ -177,7 +255,7 @@ function processSequences(sequences) {
 
 // Main execution
 function main() {
-    const { inputFile, outputFile } = parseArgs();
+    const { inputFile, outputFile, phaseFiles } = parseArgs();
     
     // Check input file exists
     if (!fs.existsSync(inputFile)) {
@@ -194,6 +272,12 @@ function main() {
     // Process sequences
     modSeqs = processSequences(modSeqs);
     data.sequences = modSeqs;
+    
+    // Read phase files if provided
+    if (phaseFiles.length > 0) {
+        console.error(`Reading ${phaseFiles.length} phase file pair(s)`);
+        data.phaseData = readPhaseFiles(phaseFiles);
+    }
     
     // Build command groups for validation
     const run = new Run();
