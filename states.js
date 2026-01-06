@@ -9,16 +9,14 @@ class ModSequence {
     }
 
     //first comes "o", then "m", then "l", then "h", then "e", then "u", 
+    // Block cache events (C+/C-) come after file I/O (#/!) but before frame end
     compare(a, b) {
-        const order = "omlheu#"; // Custom order
-        for (let i = 0; i < Math.min(a.length, b.length); i++) {
-            const indexA = order.indexOf(a[i]);
-            const indexB = order.indexOf(b[i]);
-            if (indexA !== indexB) {
-                return indexA - indexB;
-            }
-        }
-        return a.length - b.length;
+        const order = "omlheu#!C"; // Custom order
+        // Only compare the first character (line type) - return 0 for same type
+        // to preserve original order via stable sort
+        const indexA = order.indexOf(a[0]);
+        const indexB = order.indexOf(b[0]);
+        return indexA - indexB;
     }
     
 
@@ -37,37 +35,44 @@ const readModsFromFile = (file) => {
     // Input file path
     const filePath = file;
 
-
-
     let modSeq = new ModSequence();
 
-
-    let exec_phase_index = undefined;
+    // Track phase markers: each "." followed by "---" marks a new phase
+    // The frame index where each phase starts
+    let phaseIndices = [];
+    
     try {
         const data = fs.readFileSync(filePath, 'utf8');
         const lines = data.split('\n');
 
-        //find the line equal to "." while also counting how many --- there are before it and return both
-        //the index of the line and the number of "---" before it
-        let i = 0;
-        let count = 0;
-        for (i = 0; i < lines.length; i++) {
-            if (lines[i].trim() === '.') {
-                exec_phase_index = count;
-                break;
-            } else if (lines[i].trim() === '---') {
-                count++;
-            }
-        }
-        if (count > 0) {
-            exec_phase_index = count + 1;
-        }
-        //remove the line equal to "." and the one next to it
-        lines.splice(i, 2);
-
+        // First pass: find all phase markers and remove them
+        // Each phase starts with ".\n---"
+        let frameCount = 0;
+        let cleanedLines = [];
         
-        // Process each line
-        lines.forEach((line) => {
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            
+            if (line === '.') {
+                // This is a phase marker - record the frame index
+                // The phase starts at the NEXT frame (after the ---)
+                phaseIndices.push(frameCount);
+                // Skip this line and the next "---" line
+                if (i + 1 < lines.length && lines[i + 1].trim() === '---') {
+                    i++; // Skip the "---" that follows the "."
+                }
+                continue;
+            }
+            
+            if (line === '---') {
+                frameCount++;
+            }
+            
+            cleanedLines.push(lines[i]);
+        }
+        
+        // Second pass: process the cleaned lines into sequences
+        cleanedLines.forEach((line) => {
             if (line.trim() === '---') {
                 modSeq.sort();
                 modSequences.push(modSeq);
@@ -82,25 +87,34 @@ const readModsFromFile = (file) => {
         console.error('Error reading file:', err);
     }
 
-    modSequences.push(modSeq);
+    // Push the last sequence if it has content
+    if (modSeq.mods.length > 0) {
+        modSeq.sort();
+        modSequences.push(modSeq);
+    }
 
-    // Build phases object in the format expected by the visualizer
-    const phases = {
-        "0": "PHASE1"
-    };
-    if (exec_phase_index !== undefined && exec_phase_index !== null) {
-        phases[exec_phase_index.toString()] = "PHASE2";
+    // Build phases object from the detected phase indices
+    // Each phase is named PHASE1, PHASE2, etc.
+    const phases = {};
+    phaseIndices.forEach((frameIndex, i) => {
+        phases[frameIndex.toString()] = `PHASE${i}`;
+    });
+    
+    // If no phases were found, default to PHASE1 at frame 0
+    if (Object.keys(phases).length === 0) {
+        phases["0"] = "PHASE0";
     }
 
     return {
         'meta': {
             'phases': phases,
-            'tiers': ['L0', 'L1', 'L2'],  // RocksDB levels
-            'cache': false,
+            'tiers': ['NVME'],  // RocksDB tiers
+            'cache': true,      // Block cache events supported (C+/C-)
             'labels': {
                 '0': 0x00FF00,  // L0 - green
                 '1': 0x0000FF,  // L1 - blue
-                '2': 0xFF0000   // L2 - red
+                '2': 0xFF0000,  // L2 - red
+                '3': 0xFF00FF   // L3 - magenta
             }
         },
         'sequences': modSequences
