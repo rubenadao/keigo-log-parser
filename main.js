@@ -121,6 +121,17 @@ const modMap = {
         }
     },
     
+    's': (line) => {
+        // s <sst_number> <size> - SST file size
+        const match = /s ([^ ]+) (\d+)/.exec(line);
+        if (!match) return;
+        const [, number, size] = match;
+        const sst = ssts[number];
+        if (sst) {
+            sst.size = parseInt(size, 10);
+        }
+    },
+    
     'm': (line) => {
         const match = /m ([^ ]+) (\d+) l([^ ]+)/.exec(line);
         if (!match) return;
@@ -206,11 +217,11 @@ const modMap = {
     
     // Block cache events - passed through to visualizer
     'C': (line) => {
-        // C+ <sst> <offset> <size> <type> <key_hex>  - Block cache insert
-        // C- <key_hex> <was_hit>                      - Block cache eviction
+        // C+ <sst_file.sst> <offset> <size> <type> <key_hex>  - Block cache insert
+        // C- <key_hex> <was_hit>                               - Block cache eviction
         // These are handled by the visualizer, parser just validates format
         if (line.startsWith('C+ ')) {
-            const match = /C\+ (\d+) (\d+) (\d+) ([^ ]+) ([a-f0-9]+)/.exec(line);
+            const match = /C\+ ([^ ]+) (\d+) (\d+) ([^ ]+) ([a-f0-9]+)/.exec(line);
             if (!match) {
                 console.error(`Warning: Invalid C+ line format: ${line}`);
             }
