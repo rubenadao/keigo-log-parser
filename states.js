@@ -111,10 +111,12 @@ const readModsFromFile = (file) => {
             'tiers': ['NVME'],  // RocksDB tiers
             'cache': true,      // Block cache events supported (C+/C-)
             'labels': {
-                '0': 0x00FF00,  // L0 - green
-                '1': 0x0000FF,  // L1 - blue
-                '2': 0xFF0000,  // L2 - red
-                '3': 0xFF00FF   // L3 - magenta
+                '0': 0xFFFF00,  // L0 - yellow
+                '1': 0x008000,  // L1 - green
+                '2': 0x0000FF,  // L2 - blue
+                '3': 0xFF8000,  // L3 - orange
+                '4': 0xFF0000,  // L4 - red
+                '5': 0xA020F0   // L5 - purple
             }
         },
         'sequences': modSequences
