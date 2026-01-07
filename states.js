@@ -8,10 +8,10 @@ class ModSequence {
         this.mods = [];
     }
 
-    //first comes "o", then "m", then "l", then "h", then "e", then "u", 
+    //first comes "o", then "s" (size), then "m", then "l", then "h", then "e", then "u", 
     // Block cache events (C+/C-) come after file I/O (#/!) but before frame end
     compare(a, b) {
-        const order = "omlheu#!C"; // Custom order
+        const order = "osmlheu#!C"; // Custom order
         // Only compare the first character (line type) - return 0 for same type
         // to preserve original order via stable sort
         const indexA = order.indexOf(a[0]);

@@ -9,6 +9,7 @@ class Sst {
         this.side = sst_side
         this.number = number;
         this.tier = null;
+        this.size = 0;
         this.dest_x = undefined;
         this.dest_y = undefined;
         this.animating = false;
