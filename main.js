@@ -72,6 +72,24 @@ Examples:
     };
 }
 
+// Read sampling rate from config file
+function readSamplingRate(phaseFiles) {
+    // Try to find visual_profile_cache_sampling_rate in any config file
+    for (const { config } of phaseFiles) {
+        if (fs.existsSync(config)) {
+            const content = fs.readFileSync(config, 'utf-8');
+            const match = /visual_profile_cache_sampling_rate=(\d+)/.exec(content);
+            if (match) {
+                const rate = parseInt(match[1], 10);
+                console.error(`Found cache sampling rate: ${rate}`);
+                return rate;
+            }
+        }
+    }
+    console.error('Warning: Cache sampling rate not found in config files, defaulting to 100');
+    return 100; // Default
+}
+
 // Read phase files and return array of phase data objects
 // Files are stored as arrays of lines for better JSON readability
 function readPhaseFiles(phaseFiles) {
@@ -103,6 +121,9 @@ function readPhaseFiles(phaseFiles) {
 // Tier and SST state
 let tiers = [new Tier(1), new Tier(2), new Tier(3)];
 let ssts = {};
+
+// Cache usage tracking: map of cache_key -> block_size
+let currentCacheBlocks = new Map();
 
 const selectTier = (i) => i - 1;
 
@@ -219,17 +240,23 @@ const modMap = {
     'C': (line) => {
         // C+ <sst_file.sst> <offset> <size> <type> <key_hex>  - Block cache insert
         // C- <key_hex> <was_hit>                               - Block cache eviction
-        // These are handled by the visualizer, parser just validates format
         if (line.startsWith('C+ ')) {
             const match = /C\+ ([^ ]+) (\d+) (\d+) ([^ ]+) ([a-f0-9]+)/.exec(line);
             if (!match) {
                 console.error(`Warning: Invalid C+ line format: ${line}`);
+                return;
             }
+            const [, sstFile, offset, size, type, cacheKey] = match;
+            const blockSize = parseInt(size, 10);
+            currentCacheBlocks.set(cacheKey, blockSize);
         } else if (line.startsWith('C- ')) {
             const match = /C- ([a-f0-9]+) ([01])/.exec(line);
             if (!match) {
                 console.error(`Warning: Invalid C- line format: ${line}`);
+                return;
             }
+            const [, cacheKey, wasHit] = match;
+            currentCacheBlocks.delete(cacheKey);
         }
     }
 };
@@ -284,14 +311,19 @@ function main() {
     modSeqs = processSequences(modSeqs);
     data.sequences = modSeqs;
     
-    // Read phase files if provided
+    // Read phase files and sampling rate if provided
+    let samplingRate = 100; // Default
     if (phaseFiles.length > 0) {
         console.error(`Reading ${phaseFiles.length} phase file pair(s)`);
         data.phaseData = readPhaseFiles(phaseFiles);
+        samplingRate = readSamplingRate(phaseFiles);
     }
     
-    // Build command groups for validation
+    // Build command groups for validation and track cache usage
     const run = new Run();
+    const sampledCacheUsage = [];
+    const estimatedCacheUsage = [];
+    
     modSeqs.forEach((modSeq) => {
         const group = [];
         modSeq.mods.forEach((mod) => {
@@ -303,10 +335,26 @@ function main() {
         run.command_groups.push(group);
     });
     
-    // Execute to validate
+    // Execute to validate and track cache usage per frame
+    currentCacheBlocks.clear();
     run.command_groups.forEach((group) => {
         group.forEach((command) => command());
+        
+        // Calculate cache usage at end of frame
+        let sampledSize = 0;
+        for (const blockSize of currentCacheBlocks.values()) {
+            sampledSize += blockSize;
+        }
+        sampledCacheUsage.push(sampledSize);
+        estimatedCacheUsage.push(sampledSize * samplingRate);
     });
+    
+    // Add cache usage to output
+    data.cacheUsage = {
+        sampled: sampledCacheUsage,
+        estimated: estimatedCacheUsage,
+        samplingRate: samplingRate
+    };
     
     // Output
     const jsonOutput = JSON.stringify(data, null, 2);
