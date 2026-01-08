@@ -122,8 +122,17 @@ function readPhaseFiles(phaseFiles) {
 let tiers = [new Tier(1), new Tier(2), new Tier(3)];
 let ssts = {};
 
-// Cache usage tracking: map of cache_key -> block_size
-let currentCacheBlocks = new Map();
+// Cache usage tracking per cache instance: Map<cacheInstance, Map<cache_key, block_size>>
+// cacheInstance is a string: "" for default, "0", "1", etc. for numbered instances
+let cacheBlocksByInstance = new Map();
+
+// Get or create the cache blocks map for a given instance
+function getCacheInstance(instanceId) {
+    if (!cacheBlocksByInstance.has(instanceId)) {
+        cacheBlocksByInstance.set(instanceId, new Map());
+    }
+    return cacheBlocksByInstance.get(instanceId);
+}
 
 const selectTier = (i) => i - 1;
 
@@ -238,25 +247,30 @@ const modMap = {
     
     // Block cache events - passed through to visualizer
     'C': (line) => {
-        // C+ <sst_file.sst> <offset> <size> <type> <key_hex>  - Block cache insert
-        // C- <key_hex> <was_hit>                               - Block cache eviction
-        if (line.startsWith('C+ ')) {
-            const match = /C\+ ([^ ]+) (\d+) (\d+) ([^ ]+) ([a-f0-9]+)/.exec(line);
+        // C+[N] <sst_file.sst> <offset> <size> <type> <key_hex>  - Block cache insert (N is optional cache instance)
+        // C-[N] <key_hex> <was_hit>                               - Block cache eviction (N is optional cache instance)
+        if (line.startsWith('C+')) {
+            // Match C+ or C+0, C+1, etc. followed by space
+            const match = /C\+(\d*) ([^ ]+) (\d+) (\d+) ([^ ]+) ([a-f0-9]+)/.exec(line);
             if (!match) {
                 console.error(`Warning: Invalid C+ line format: ${line}`);
                 return;
             }
-            const [, sstFile, offset, size, type, cacheKey] = match;
+            const [, cacheInstance, sstFile, offset, size, type, cacheKey] = match;
             const blockSize = parseInt(size, 10);
-            currentCacheBlocks.set(cacheKey, blockSize);
-        } else if (line.startsWith('C- ')) {
-            const match = /C- ([a-f0-9]+) ([01])/.exec(line);
+            const instanceId = cacheInstance || ''; // '' for default instance
+            getCacheInstance(instanceId).set(cacheKey, blockSize);
+        } else if (line.startsWith('C-')) {
+            // Match C- or C-0, C-1, etc. followed by space
+            const match = /C-(\d*) ([a-f0-9]+) ([01])/.exec(line);
             if (!match) {
                 console.error(`Warning: Invalid C- line format: ${line}`);
                 return;
             }
-            const [, cacheKey, wasHit] = match;
-            currentCacheBlocks.delete(cacheKey);
+            const [, cacheInstance, cacheKey, wasHit] = match;
+            const instanceId = cacheInstance || ''; // '' for default instance
+            const cacheBlocks = getCacheInstance(instanceId);
+            cacheBlocks.delete(cacheKey);
         }
     }
 };
@@ -321,8 +335,8 @@ function main() {
     
     // Build command groups for validation and track cache usage
     const run = new Run();
-    const sampledCacheUsage = [];
-    const estimatedCacheUsage = [];
+    // Track cache usage per instance: { instanceId: { sampled: [], estimated: [] } }
+    const cacheUsageByInstance = new Map();
     
     modSeqs.forEach((modSeq) => {
         const group = [];
@@ -336,25 +350,69 @@ function main() {
     });
     
     // Execute to validate and track cache usage per frame
-    currentCacheBlocks.clear();
+    cacheBlocksByInstance.clear();
     run.command_groups.forEach((group) => {
         group.forEach((command) => command());
         
-        // Calculate cache usage at end of frame
-        let sampledSize = 0;
-        for (const blockSize of currentCacheBlocks.values()) {
-            sampledSize += blockSize;
+        // Calculate cache usage at end of frame for each instance
+        for (const [instanceId, blocks] of cacheBlocksByInstance.entries()) {
+            let sampledSize = 0;
+            for (const blockSize of blocks.values()) {
+                sampledSize += blockSize;
+            }
+            
+            if (!cacheUsageByInstance.has(instanceId)) {
+                cacheUsageByInstance.set(instanceId, { sampled: [], estimated: [] });
+            }
+            const usage = cacheUsageByInstance.get(instanceId);
+            usage.sampled.push(sampledSize);
+            usage.estimated.push(sampledSize * samplingRate);
         }
-        sampledCacheUsage.push(sampledSize);
-        estimatedCacheUsage.push(sampledSize * samplingRate);
+        
+        // Ensure all known instances have an entry for this frame
+        for (const [instanceId, usage] of cacheUsageByInstance.entries()) {
+            if (usage.sampled.length < run.command_groups.indexOf(group) + 1) {
+                // This instance had no activity this frame, carry forward previous value or 0
+                const lastValue = usage.sampled.length > 0 ? usage.sampled[usage.sampled.length - 1] : 0;
+                usage.sampled.push(lastValue);
+                usage.estimated.push(lastValue * samplingRate);
+            }
+        }
     });
     
-    // Add cache usage to output
-    data.cacheUsage = {
-        sampled: sampledCacheUsage,
-        estimated: estimatedCacheUsage,
-        samplingRate: samplingRate
-    };
+    // Build cache usage output
+    // If only default instance exists, use simple format for backwards compatibility
+    const instances = Array.from(cacheUsageByInstance.keys());
+    if (instances.length === 0) {
+        // No cache events at all
+        data.cacheUsage = {
+            sampled: [],
+            estimated: [],
+            samplingRate: samplingRate
+        };
+    } else if (instances.length === 1 && instances[0] === '') {
+        // Only default instance, use simple format
+        const usage = cacheUsageByInstance.get('');
+        data.cacheUsage = {
+            sampled: usage.sampled,
+            estimated: usage.estimated,
+            samplingRate: samplingRate
+        };
+    } else {
+        // Multiple instances, use per-instance format
+        const instancesData = {};
+        for (const [instanceId, usage] of cacheUsageByInstance.entries()) {
+            const key = instanceId === '' ? 'default' : instanceId;
+            instancesData[key] = {
+                sampled: usage.sampled,
+                estimated: usage.estimated
+            };
+        }
+        data.cacheUsage = {
+            instances: instancesData,
+            samplingRate: samplingRate
+        };
+    }
     
     // Output
     const jsonOutput = JSON.stringify(data, null, 2);
