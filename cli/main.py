@@ -6,9 +6,6 @@ A command-line interface for parsing RocksDB trace logs into JSON format
 for visualization with the Keigo visualizer.
 
 Usage:
-    python -m keigo_parser <command> [options]
-    
-    # Or if installed:
     keigo-parser <command> [options]
 
 Commands:

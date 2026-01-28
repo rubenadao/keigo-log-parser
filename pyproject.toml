@@ -19,12 +19,13 @@ dependencies = [
 ]
 
 [project.scripts]
-keigo-parser = "keigo_parser.main:cli"
+keigo-parser = "keigo_parser.cli.main:cli"
 
 [project.optional-dependencies]
 dev = [
     "pytest",
 ]
 
-[tool.setuptools]
-packages = ["keigo_parser", "keigo_parser.lib"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["keigo_parser*"]
