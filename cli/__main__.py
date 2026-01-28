@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Allow running the CLI with `python -m keigo_parser`."""
+"""Allow running the CLI with `python -m cli`."""
 
 from .main import cli
 
