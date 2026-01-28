@@ -1,0 +1,36 @@
+# WiredTiger Configuration (MongoDB)
+# ===================================
+# Config for WiredTiger storage engine traces
+
+tiers:
+  - name: "Data Files"
+    patterns:
+      - "\\.wt$"            # WiredTiger data files
+      - "collection-.*\\.wt$"
+      - "index-.*\\.wt$"
+  
+  - name: "Journal"
+    patterns:
+      - "WiredTigerLog\\."  # WAL/journal files
+      - "journal/"
+  
+  - name: "Metadata"
+    patterns:
+      - "WiredTiger$"       # Main metadata file
+      - "WiredTiger\\.wt$"
+      - "WiredTiger\\.lock$"
+      - "WiredTiger\\.turtle$"
+      - "_mdb_catalog\\.wt$"
+
+labels:
+  "-1": 0x808080   # No level - Gray
+  "collection": 0x4169E1  # Collection files - Royal Blue
+  "index": 0x32CD32      # Index files - Lime Green
+  "journal": 0xFFA500    # Journal files - Orange
+  "meta": 0x9370DB       # Metadata - Medium Purple
+
+phases:
+  - "Initialization"
+  - "Workload"
+
+cache: false

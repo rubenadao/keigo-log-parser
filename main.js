@@ -3,13 +3,26 @@
  * Keigo Log Parser
  * Parses RocksDB visual profiler trace logs into JSON format for the Keigo visualizer.
  * 
- * Usage: node main.js <input_file> [output_file] [--phase <config_file> <perf_log_file>]...
+ * Usage: node main.js <input_file> [output_file] [options]
  *   input_file  - Path to the trace log file
  *   output_file - Path for the output JSON (default: stdout)
+ *   --config    - Optional YAML/JSON config file for tier patterns, labels, phases
  *   --phase     - Optional phase data: config file and performance log file pair
  */
 
 const fs = require('fs');
+const path = require('path');
+
+// Optional YAML support - falls back to JSON if js-yaml not available
+let yaml = null;
+try {
+    yaml = require('js-yaml');
+} catch (e) {
+    // js-yaml not installed, will use JSON config only
+}
+
+// Visualization config loaded from --config file
+let vizConfig = null;
 const { Sst, Tier, Run } = require('./structs');
 const { readModsFromFile } = require('./states');
 
@@ -21,23 +34,28 @@ function parseArgs() {
         console.log(`
 Keigo Log Parser - Parse RocksDB trace logs for visualization
 
-Usage: node main.js <input_file> [output_file] [--phase <config_file> <perf_log_file>]...
+Usage: node main.js <input_file> [output_file] [options]
 
 Arguments:
   input_file   Path to the trace log file (required)
   output_file  Path for the output JSON file (optional, defaults to stdout)
-  --phase      Phase data pair: config file and performance log file (can be repeated)
+
+Options:
+  --config <file>   YAML/JSON config file for tier patterns, labels, and phases
+  --phase <cfg> <log>  Phase data pair: config file and performance log file (repeatable)
 
 Examples:
   node main.js trace.log                    # Output to stdout
   node main.js trace.log output.json        # Output to file
-  node main.js trace.log output.json --phase loading.cfg loading_perf.log --phase exec.cfg exec_perf.log
+  node main.js trace.log output.json --config config.yaml
+  node main.js trace.log output.json --config config.yaml --phase loading.cfg loading.log
 `);
         process.exit(args.length === 0 ? 1 : 0);
     }
     
     let inputFile = null;
     let outputFile = null;
+    let configFile = null;
     const phaseFiles = []; // Array of { config: string, perfLog: string }
     
     let i = 0;
@@ -53,6 +71,14 @@ Examples:
                 perfLog: args[i + 2]
             });
             i += 3;
+        } else if (args[i] === '--config') {
+            // Expect one argument after --config
+            if (i + 1 >= args.length) {
+                console.error('Error: --config requires a file path');
+                process.exit(1);
+            }
+            configFile = args[i + 1];
+            i += 2;
         } else if (!inputFile) {
             inputFile = args[i];
             i++;
@@ -68,8 +94,87 @@ Examples:
     return {
         inputFile,
         outputFile: outputFile || null,
+        configFile,
         phaseFiles
     };
+}
+
+/**
+ * Read and parse a YAML or JSON config file
+ * Config format:
+ * ```yaml
+ * tiers:
+ *   - name: "Local NVMe"
+ *     patterns:
+ *       - "\\.sst$"           # SST files
+ *       - "MANIFEST-.*"
+ *   - name: "Blob Storage"
+ *     patterns:
+ *       - "\\.blob$"          # Blob files
+ * 
+ * labels:
+ *   "0": 0xFFFF00
+ *   "1": 0x008000
+ * 
+ * phases:
+ *   - "Loading"
+ *   - "Execution"
+ * 
+ * cache: true
+ * ```
+ */
+function readConfigFile(configPath) {
+    if (!fs.existsSync(configPath)) {
+        console.error(`Error: Config file not found: ${configPath}`);
+        process.exit(1);
+    }
+    
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const ext = path.extname(configPath).toLowerCase();
+    
+    let config;
+    if (ext === '.yaml' || ext === '.yml') {
+        if (!yaml) {
+            console.error('Error: js-yaml not installed. Install with: npm install js-yaml');
+            console.error('       Or use a .json config file instead.');
+            process.exit(1);
+        }
+        config = yaml.load(content);
+    } else {
+        // Assume JSON
+        config = JSON.parse(content);
+    }
+    
+    // Compile regex patterns for each tier
+    if (config.tiers) {
+        config.tiers.forEach((tier, index) => {
+            tier.index = index + 1;  // 1-based tier index
+            tier.compiledPatterns = (tier.patterns || []).map(p => new RegExp(p));
+        });
+    }
+    
+    console.error(`Loaded config: ${configPath}`);
+    return config;
+}
+
+/**
+ * Determine which tier a file belongs to based on config patterns
+ * Returns the tier index (1-based) or the default tier if no match
+ */
+function getTierForFile(filename, defaultTier) {
+    if (!vizConfig || !vizConfig.tiers) {
+        return defaultTier;
+    }
+    
+    for (const tier of vizConfig.tiers) {
+        for (const pattern of tier.compiledPatterns || []) {
+            if (pattern.test(filename)) {
+                return tier.index;
+            }
+        }
+    }
+    
+    return defaultTier;  // No pattern matched, use trace's tier
 }
 
 // Read sampling rate from config file
@@ -126,6 +231,22 @@ let ssts = {};
 // cacheInstance is a string: "" for default, "0", "1", etc. for numbered instances
 let cacheBlocksByInstance = new Map();
 
+// Blob cache tracking per cache instance: Map<cacheInstance, Map<blob_key, blob_size>>
+// Similar structure to block cache
+let blobBlocksByInstance = new Map();
+
+// Debug counters for cache events
+let cacheInsertCount = 0;
+let cacheEvictCount = 0;
+let cacheEvictMatchedCount = 0;
+let cacheEvictMissedCount = 0;
+
+// Debug counters for blob cache events
+let blobInsertCount = 0;
+let blobEvictCount = 0;
+let blobEvictMatchedCount = 0;
+let blobEvictMissedCount = 0;
+
 // Get or create the cache blocks map for a given instance
 function getCacheInstance(instanceId) {
     if (!cacheBlocksByInstance.has(instanceId)) {
@@ -134,18 +255,29 @@ function getCacheInstance(instanceId) {
     return cacheBlocksByInstance.get(instanceId);
 }
 
+// Get or create the blob cache blocks map for a given instance
+function getBlobCacheInstance(instanceId) {
+    if (!blobBlocksByInstance.has(instanceId)) {
+        blobBlocksByInstance.set(instanceId, new Map());
+    }
+    return blobBlocksByInstance.get(instanceId);
+}
+
 const selectTier = (i) => i - 1;
 
 // Command handlers
 const modMap = {
     'o': (line) => {
-        const match = /o ([^ ]+) (\d+) l([^ ]+)/.exec(line);
+        // Match: o <filename> <tier> [l<label>]  (label is optional for blob files)
+        const match = /o ([^ ]+) (\d+)(?: l([^ ]+))?/.exec(line);
         if (!match) return;
-        const [, number, tier, label] = match;
+        const [, number, defaultTier, label] = match;
         if (ssts[number] === undefined) {
+            // Use config patterns to determine tier, or fall back to trace's tier
+            const tier = getTierForFile(number, defaultTier);
             const sst = new Sst(number);
-            sst.label = label;
-            sst.tier = tier;
+            sst.label = label || '-1';  // Default label for files without level
+            sst.tier = tier.toString();
             tiers[selectTier(tier)].files.set(number, sst);
             ssts[number] = sst;
         }
@@ -163,16 +295,19 @@ const modMap = {
     },
     
     'm': (line) => {
-        const match = /m ([^ ]+) (\d+) l([^ ]+)/.exec(line);
+        // Match: m <filename> <tier> [l<label>]  (label is optional for blob files)
+        const match = /m ([^ ]+) (\d+)(?: l([^ ]+))?/.exec(line);
         if (!match) return;
-        const [, number, tier, label] = match;
+        const [, number, defaultTier, label] = match;
         const sst = ssts[number];
         if (!sst) return;
-        sst.label = label;
-        if (sst.tier === tier) return;
+        if (label) sst.label = label;  // Only update label if provided
+        // Use config patterns to determine tier, or fall back to trace's tier
+        const tier = getTierForFile(number, defaultTier);
+        if (sst.tier === tier.toString()) return;
         tiers[selectTier(tier)].files.set(number, sst);
-        tiers[selectTier(sst.tier)].files.delete(number);
-        sst.tier = tier;
+        tiers[selectTier(parseInt(sst.tier))].files.delete(number);
+        sst.tier = tier.toString();
     },
     
     'h': (line) => {
@@ -248,7 +383,7 @@ const modMap = {
     // Block cache events - passed through to visualizer
     'C': (line) => {
         // C+[N] <sst_file.sst> <offset> <size> <type> <key_hex>  - Block cache insert (N is optional cache instance)
-        // C-[N] <key_hex> <was_hit>                               - Block cache eviction (N is optional cache instance)
+        // C- <key_hex> <was_hit>                                  - Block cache eviction (instance inferred from key)
         if (line.startsWith('C+')) {
             // Match C+ or C+0, C+1, etc. followed by space
             const match = /C\+(\d*) ([^ ]+) (\d+) (\d+) ([^ ]+) ([a-f0-9]+)/.exec(line);
@@ -260,17 +395,70 @@ const modMap = {
             const blockSize = parseInt(size, 10);
             const instanceId = cacheInstance || ''; // '' for default instance
             getCacheInstance(instanceId).set(cacheKey, blockSize);
+            cacheInsertCount++;
         } else if (line.startsWith('C-')) {
-            // Match C- or C-0, C-1, etc. followed by space
-            const match = /C-(\d*) ([a-f0-9]+) ([01])/.exec(line);
+            // C- <key_hex> <was_hit> - no instance number needed, infer from key
+            const match = /C- ([a-f0-9]+) ([01])/.exec(line);
             if (!match) {
                 console.error(`Warning: Invalid C- line format: ${line}`);
                 return;
             }
-            const [, cacheInstance, cacheKey, wasHit] = match;
-            const instanceId = cacheInstance || ''; // '' for default instance
-            const cacheBlocks = getCacheInstance(instanceId);
-            cacheBlocks.delete(cacheKey);
+            const [, cacheKey, wasHit] = match;
+            cacheEvictCount++;
+            // Find and remove from whichever cache instance has this key
+            let found = false;
+            for (const [instanceId, cacheBlocks] of cacheBlocksByInstance.entries()) {
+                if (cacheBlocks.has(cacheKey)) {
+                    cacheBlocks.delete(cacheKey);
+                    cacheEvictMatchedCount++;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                cacheEvictMissedCount++;
+            }
+        }
+    },
+    
+    // Blob cache events - similar to block cache but for blob files
+    'B': (line) => {
+        // B+ <sst_file.sst> <offset> <size> <blob_key_hex>  - Blob cache insert
+        // B- <blob_key_hex> <was_hit>                        - Blob cache eviction
+        if (line.startsWith('B+')) {
+            // Match B+ followed by sst file, offset, size, and key
+            const match = /B\+ ([^ ]+) (\d+) (\d+) ([a-f0-9]+)/.exec(line);
+            if (!match) {
+                console.error(`Warning: Invalid B+ line format: ${line}`);
+                return;
+            }
+            const [, sstFile, offset, size, blobKey] = match;
+            const blobSize = parseInt(size, 10);
+            // Use default instance for now (blob cache doesn't have instance numbers yet)
+            getBlobCacheInstance('').set(blobKey, blobSize);
+            blobInsertCount++;
+        } else if (line.startsWith('B-')) {
+            // B- <blob_key_hex> <was_hit>
+            const match = /B- ([a-f0-9]+) ([01])/.exec(line);
+            if (!match) {
+                console.error(`Warning: Invalid B- line format: ${line}`);
+                return;
+            }
+            const [, blobKey, wasHit] = match;
+            blobEvictCount++;
+            // Find and remove from whichever blob cache instance has this key
+            let found = false;
+            for (const [instanceId, blobBlocks] of blobBlocksByInstance.entries()) {
+                if (blobBlocks.has(blobKey)) {
+                    blobBlocks.delete(blobKey);
+                    blobEvictMatchedCount++;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                blobEvictMissedCount++;
+            }
         }
     }
 };
@@ -305,14 +493,77 @@ function processSequences(sequences) {
     return processedSequences;
 }
 
+/**
+ * Rewrite trace lines to apply tier patterns from config.
+ * This modifies 'o' and 'm' commands to use the tier determined by regex patterns.
+ */
+function applyTierPatterns(sequences) {
+    if (!vizConfig || !vizConfig.tiers) {
+        return sequences;
+    }
+    
+    return sequences.map(seq => {
+        const newMods = seq.mods.map(mod => {
+            // Match 'o' command: o <filename> <tier> [l<label>]
+            let match = /^o ([^ ]+) (\d+)(?: l([^ ]+))?$/.exec(mod);
+            if (match) {
+                const [, filename, defaultTier, label] = match;
+                const newTier = getTierForFile(filename, defaultTier);
+                if (label) {
+                    return `o ${filename} ${newTier} l${label}`;
+                } else {
+                    return `o ${filename} ${newTier}`;
+                }
+            }
+            
+            // Match 'm' command: m <filename> <tier> [l<label>]
+            match = /^m ([^ ]+) (\d+)(?: l([^ ]+))?$/.exec(mod);
+            if (match) {
+                const [, filename, defaultTier, label] = match;
+                const newTier = getTierForFile(filename, defaultTier);
+                if (label) {
+                    return `m ${filename} ${newTier} l${label}`;
+                } else {
+                    return `m ${filename} ${newTier}`;
+                }
+            }
+            
+            // Match 'h' command: h <filename> <tier>
+            match = /^h ([^ ]+) (\d+)$/.exec(mod);
+            if (match) {
+                const [, filename, defaultTier] = match;
+                const newTier = getTierForFile(filename, defaultTier);
+                return `h ${filename} ${newTier}`;
+            }
+            
+            // Match 'e' command: e <filename> <tier>
+            match = /^e ([^ ]+) (\d+)$/.exec(mod);
+            if (match) {
+                const [, filename, defaultTier] = match;
+                const newTier = getTierForFile(filename, defaultTier);
+                return `e ${filename} ${newTier}`;
+            }
+            
+            return mod;  // No change
+        });
+        
+        return { ...seq, mods: newMods };
+    });
+}
+
 // Main execution
 function main() {
-    const { inputFile, outputFile, phaseFiles } = parseArgs();
+    const { inputFile, outputFile, configFile, phaseFiles } = parseArgs();
     
     // Check input file exists
     if (!fs.existsSync(inputFile)) {
         console.error(`Error: Input file not found: ${inputFile}`);
         process.exit(1);
+    }
+    
+    // Load visualization config if provided
+    if (configFile) {
+        vizConfig = readConfigFile(configFile);
     }
     
     console.error(`Parsing: ${inputFile}`);
@@ -323,6 +574,10 @@ function main() {
     
     // Process sequences
     modSeqs = processSequences(modSeqs);
+    
+    // Apply tier patterns from config (rewrites trace lines)
+    modSeqs = applyTierPatterns(modSeqs);
+    
     data.sequences = modSeqs;
     
     // Read phase files and sampling rate if provided
@@ -337,6 +592,8 @@ function main() {
     const run = new Run();
     // Track cache usage per instance: { instanceId: { sampled: [], estimated: [] } }
     const cacheUsageByInstance = new Map();
+    // Track blob cache usage per instance (same structure)
+    const blobUsageByInstance = new Map();
     
     modSeqs.forEach((modSeq) => {
         const group = [];
@@ -351,10 +608,23 @@ function main() {
     
     // Execute to validate and track cache usage per frame
     cacheBlocksByInstance.clear();
+    blobBlocksByInstance.clear();
+    let frameIndex = 0;
     run.command_groups.forEach((group) => {
         group.forEach((command) => command());
         
-        // Calculate cache usage at end of frame for each instance
+        // Calculate cache usage at end of frame for each known instance
+        // First, ensure all instances have an entry up to this frame
+        for (const [instanceId, usage] of cacheUsageByInstance.entries()) {
+            while (usage.sampled.length < frameIndex) {
+                // Fill in missing frames with the last known value (or 0)
+                const lastValue = usage.sampled.length > 0 ? usage.sampled[usage.sampled.length - 1] : 0;
+                usage.sampled.push(lastValue);
+                usage.estimated.push(lastValue * samplingRate);
+            }
+        }
+        
+        // Now record current frame's cache usage for each instance
         for (const [instanceId, blocks] of cacheBlocksByInstance.entries()) {
             let sampledSize = 0;
             for (const blockSize of blocks.values()) {
@@ -362,22 +632,62 @@ function main() {
             }
             
             if (!cacheUsageByInstance.has(instanceId)) {
-                cacheUsageByInstance.set(instanceId, { sampled: [], estimated: [] });
+                // New instance - backfill with zeros for previous frames
+                const sampled = new Array(frameIndex).fill(0);
+                const estimated = new Array(frameIndex).fill(0);
+                cacheUsageByInstance.set(instanceId, { sampled, estimated });
             }
             const usage = cacheUsageByInstance.get(instanceId);
             usage.sampled.push(sampledSize);
             usage.estimated.push(sampledSize * samplingRate);
         }
         
-        // Ensure all known instances have an entry for this frame
+        // For instances that had no activity this frame, carry forward
         for (const [instanceId, usage] of cacheUsageByInstance.entries()) {
-            if (usage.sampled.length < run.command_groups.indexOf(group) + 1) {
-                // This instance had no activity this frame, carry forward previous value or 0
+            if (usage.sampled.length <= frameIndex) {
                 const lastValue = usage.sampled.length > 0 ? usage.sampled[usage.sampled.length - 1] : 0;
                 usage.sampled.push(lastValue);
                 usage.estimated.push(lastValue * samplingRate);
             }
         }
+        
+        // === Blob cache usage tracking (same pattern as block cache) ===
+        // Ensure all blob instances have an entry up to this frame
+        for (const [instanceId, usage] of blobUsageByInstance.entries()) {
+            while (usage.sampled.length < frameIndex) {
+                const lastValue = usage.sampled.length > 0 ? usage.sampled[usage.sampled.length - 1] : 0;
+                usage.sampled.push(lastValue);
+                usage.estimated.push(lastValue * samplingRate);
+            }
+        }
+        
+        // Record current frame's blob cache usage for each instance
+        for (const [instanceId, blocks] of blobBlocksByInstance.entries()) {
+            let sampledSize = 0;
+            for (const blockSize of blocks.values()) {
+                sampledSize += blockSize;
+            }
+            
+            if (!blobUsageByInstance.has(instanceId)) {
+                const sampled = new Array(frameIndex).fill(0);
+                const estimated = new Array(frameIndex).fill(0);
+                blobUsageByInstance.set(instanceId, { sampled, estimated });
+            }
+            const usage = blobUsageByInstance.get(instanceId);
+            usage.sampled.push(sampledSize);
+            usage.estimated.push(sampledSize * samplingRate);
+        }
+        
+        // For blob instances that had no activity this frame, carry forward
+        for (const [instanceId, usage] of blobUsageByInstance.entries()) {
+            if (usage.sampled.length <= frameIndex) {
+                const lastValue = usage.sampled.length > 0 ? usage.sampled[usage.sampled.length - 1] : 0;
+                usage.sampled.push(lastValue);
+                usage.estimated.push(lastValue * samplingRate);
+            }
+        }
+        
+        frameIndex++;
     });
     
     // Build cache usage output
@@ -412,6 +722,67 @@ function main() {
             instances: instancesData,
             samplingRate: samplingRate
         };
+    }
+    
+    // Build blob cache usage output (same structure as block cache)
+    const blobInstances = Array.from(blobUsageByInstance.keys());
+    if (blobInstances.length === 0) {
+        // No blob cache events at all
+        data.blobCacheUsage = {
+            sampled: [],
+            estimated: [],
+            samplingRate: samplingRate
+        };
+    } else if (blobInstances.length === 1 && blobInstances[0] === '') {
+        // Only default instance, use simple format
+        const usage = blobUsageByInstance.get('');
+        data.blobCacheUsage = {
+            sampled: usage.sampled,
+            estimated: usage.estimated,
+            samplingRate: samplingRate
+        };
+    } else {
+        // Multiple instances, use per-instance format
+        const instancesData = {};
+        for (const [instanceId, usage] of blobUsageByInstance.entries()) {
+            const key = instanceId === '' ? 'default' : instanceId;
+            instancesData[key] = {
+                sampled: usage.sampled,
+                estimated: usage.estimated
+            };
+        }
+        data.blobCacheUsage = {
+            instances: instancesData,
+            samplingRate: samplingRate
+        };
+    }
+    
+    // Apply config overrides to metadata
+    if (vizConfig) {
+        // Override tier names from config
+        if (vizConfig.tiers) {
+            data.meta.tiers = vizConfig.tiers.map(t => t.name);
+        }
+        
+        // Override labels/colors from config
+        if (vizConfig.labels) {
+            data.meta.labels = vizConfig.labels;
+        }
+        
+        // Override phase names from config
+        if (vizConfig.phases) {
+            const phaseIndices = Object.keys(data.meta.phases).sort((a, b) => parseInt(a) - parseInt(b));
+            phaseIndices.forEach((idx, i) => {
+                if (vizConfig.phases[i]) {
+                    data.meta.phases[idx] = vizConfig.phases[i];
+                }
+            });
+        }
+        
+        // Override cache setting from config
+        if (vizConfig.cache !== undefined) {
+            data.meta.cache = vizConfig.cache;
+        }
     }
     
     // Output
