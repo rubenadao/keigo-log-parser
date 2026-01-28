@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Python
+*.egg-info/
+__pycache__/
+*.pyc
+.venv/
+
+# Editor
+.vscode/
+.idea/
+*.sw?
+
+# OS
+.DS_Store

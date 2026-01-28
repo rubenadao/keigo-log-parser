@@ -1,0 +1,37 @@
+# RocksDB Tiered Storage Configuration
+# =====================================
+# Config for RocksDB with local + remote tiered storage (LegoKV style)
+
+tiers:
+  - name: "Local NVMe"
+    patterns:
+      - "^\\d+\\.sst$"      # Regular SST files on local storage
+      - "MANIFEST-"
+      - "CURRENT$"
+      - "OPTIONS-"
+      - "IDENTITY$"
+      - "LOCK$"
+      - "\\.log$"
+  
+  - name: "Remote Storage"
+    patterns:
+      - "\\.blob$"          # Blob files on remote/cold storage
+      - "-remote-"          # Files with remote marker
+      - "-offload-"         # Offloaded files
+
+labels:
+  "-1": 0x808080   # No level - Gray
+  "0": 0xFFFF00    # L0 - Yellow
+  "1": 0x008000    # L1 - Green
+  "2": 0x0000FF    # L2 - Blue
+  "3": 0xFF8000    # L3 - Orange
+  "4": 0xFF0000    # L4 - Red
+  "5": 0xA020F0    # L5 - Purple
+  "6": 0x00FFFF    # L6 - Cyan
+
+phases:
+  - "Loading"
+  - "Warmup"
+  - "Execution"
+
+cache: false

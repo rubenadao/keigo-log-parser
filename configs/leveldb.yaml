@@ -1,0 +1,29 @@
+# LevelDB Configuration
+# =====================
+# Config for LevelDB traces
+
+tiers:
+  - name: "SSTs"
+    patterns:
+      - "\\.ldb$"           # LevelDB SST files
+      - "\\.sst$"           # Alternative SST extension
+      - "MANIFEST-"
+      - "CURRENT$"
+      - "LOCK$"
+      - "\\.log$"           # WAL files
+
+labels:
+  "-1": 0x808080   # No level - Gray
+  "0": 0xFFFF00    # L0 - Yellow
+  "1": 0x008000    # L1 - Green
+  "2": 0x0000FF    # L2 - Blue
+  "3": 0xFF8000    # L3 - Orange
+  "4": 0xFF0000    # L4 - Red
+  "5": 0xA020F0    # L5 - Purple
+  "6": 0x00FFFF    # L6 - Cyan
+
+phases:
+  - "Loading"
+  - "Execution"
+
+cache: false

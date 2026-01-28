@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keigo-parser"
+version = "1.0.0"
+description = "Command-line interface for parsing RocksDB trace logs for the Keigo visualizer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "RocksDB Visual Profiler Team"}
+]
+dependencies = [
+    "click>=8.0.0",
+    "trogon>=0.5.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+keigo-parser = "keigo_parser.main:cli"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools]
+packages = ["keigo_parser", "keigo_parser.lib"]

@@ -1,0 +1,41 @@
+# PostgreSQL Configuration
+# ========================
+# Config for PostgreSQL storage traces
+
+tiers:
+  - name: "Heap Files"
+    patterns:
+      - "^\\d+$"            # Base relation files (numeric names)
+      - "^\\d+\\.\\d+$"     # Relation segment files
+      - "base/"
+  
+  - name: "Index Files"
+    patterns:
+      - "_pkey$"            # Primary key indexes
+      - "_idx$"             # Secondary indexes
+      - "_btree$"
+  
+  - name: "WAL"
+    patterns:
+      - "^[0-9A-F]{24}$"    # WAL segment files
+      - "pg_wal/"
+  
+  - name: "Temp"
+    patterns:
+      - "pgsql_tmp"
+      - "^t\\d+_\\d+$"      # Temp relation files
+
+labels:
+  "-1": 0x808080   # No category - Gray
+  "heap": 0x4169E1     # Heap files - Royal Blue
+  "index": 0x32CD32    # Index files - Lime Green
+  "toast": 0xFFD700    # TOAST files - Gold
+  "wal": 0xFFA500      # WAL files - Orange
+  "temp": 0xDC143C     # Temp files - Crimson
+
+phases:
+  - "Startup"
+  - "Workload"
+  - "Checkpoint"
+
+cache: false

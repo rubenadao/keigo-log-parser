@@ -1,0 +1,34 @@
+# RocksDB Configuration
+# =====================
+# Default config for RocksDB with BlobDB (tiered storage)
+
+tiers:
+  - name: "SSTs"
+    patterns:
+      - "\\.sst$"           # Standard SST files (e.g., 000123.sst)
+      - "MANIFEST-"         # Manifest files
+      - "CURRENT$"          # Current file
+      - "OPTIONS-"          # Options files
+      - "IDENTITY$"         # Identity file
+      - "LOCK$"             # Lock file
+      - "\\.log$"           # WAL log files
+  
+  - name: "BLOBs"
+    patterns:
+      - "\\.blob$"          # Blob files (e.g., 000456.blob)
+
+labels:
+  "-1": 0x808080   # No level (e.g., blob files) - Gray
+  "0": 0xFFFF00    # L0 - Yellow (memtable flush output)
+  "1": 0x008000    # L1 - Green
+  "2": 0x0000FF    # L2 - Blue
+  "3": 0xFF8000    # L3 - Orange
+  "4": 0xFF0000    # L4 - Red
+  "5": 0xA020F0    # L5 - Purple
+  "6": 0x00FFFF    # L6 - Cyan
+
+phases:
+  - "Loading"
+  - "Execution"
+
+cache: false
