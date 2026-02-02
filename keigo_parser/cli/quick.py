@@ -97,12 +97,12 @@ def generate_trace_name(directory: Path) -> str:
 
 @click.command('quick')
 @click.argument('run_directory', type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.option('-o', '--output', 'output_file', type=click.Path(path_type=Path), default=None,
+              help='Output JSON file (default: <run_directory>/<name>.json)')
 @click.option('-n', '--name', 'trace_name', help='Override the trace name (default: directory name)')
 @click.option('-c', '--config', 'config_file', type=str,
               help='YAML/JSON config file or catalog name (e.g., "rocksdb", "wiredtiger")')
-@click.option('-o', '--output-dir', type=click.Path(path_type=Path), default=None,
-              help='Output directory (default: current directory)')
-def quick(run_directory: str, trace_name: str | None, config_file: str | None, output_dir: Path | None):
+def quick(run_directory: str, output_file: Path | None, trace_name: str | None, config_file: str | None):
     """Quick workflow: auto-detect logs and parse.
     
     Automatically finds config and perf log files in RUN_DIRECTORY
@@ -111,8 +111,8 @@ def quick(run_directory: str, trace_name: str | None, config_file: str | None, o
     \b
     Example:
         keigo-parser quick ~/rocksdb-runs/50M_hybrid/
+        keigo-parser quick ~/rocksdb-runs/50M_hybrid/ -o output.json
         keigo-parser quick ~/rocksdb-runs/50M_hybrid/ -c rocksdb
-        keigo-parser quick ~/rocksdb-runs/50M_hybrid/ -o ./traces/
     """
     run_path = Path(run_directory)
     
@@ -149,13 +149,11 @@ def quick(run_directory: str, trace_name: str | None, config_file: str | None, o
         log_error(f"Could not find visual_profile.log in {run_path}")
         raise click.Abort()
     
-    # Determine output file
-    output_file = resolve_output_path(
-        output_file=None,
-        output_dir=output_dir,
-        trace_name=trace_name,
-        input_file=visual_profile,
-    )
+    # Determine output file (must be absolute since parser runs from different cwd)
+    if output_file is None:
+        name = trace_name if trace_name else run_path.name
+        output_file = run_path / f"{name}.json"
+    output_file = output_file.resolve()
     
     # Ensure output directory exists
     output_file.parent.mkdir(parents=True, exist_ok=True)

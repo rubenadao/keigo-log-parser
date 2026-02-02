@@ -111,7 +111,7 @@ const readModsFromFile = (file) => {
             'tiers': ['NVME'],  // RocksDB tiers
             'cache': true,      // Block cache events supported (C+/C-)
             'labels': {
-                '-1': 0x808080, // Blob files - gray
+                '-1': 0x808080, // other files - gray
                 '0': 0xFFFF00,  // L0 - yellow
                 '1': 0x008000,  // L1 - green
                 '2': 0x0000FF,  // L2 - blue

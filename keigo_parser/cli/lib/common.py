@@ -41,8 +41,8 @@ def print_header(msg: str) -> None:
 
 def get_parser_dir() -> Path:
     """Get the keigo-log-parser directory (this package's root)."""
-    # Go up from lib/ to cli/ to keigo-log-parser/
-    return Path(__file__).resolve().parent.parent.parent
+    # Go up from lib/ to cli/ to keigo_parser/ to keigo-log-parser/
+    return Path(__file__).resolve().parent.parent.parent.parent
 
 
 def get_configs_dir() -> Path:

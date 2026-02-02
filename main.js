@@ -231,6 +231,11 @@ let ssts = {};
 // cacheInstance is a string: "" for default, "0", "1", etc. for numbered instances
 let cacheBlocksByInstance = new Map();
 
+// Lookup table for cache_key -> {filename, offset, type} to resolve migrations
+// When C+0 is logged, we store the filename. When C+1 (migration) comes with "-" as filename,
+// we look up the real filename from this map.
+let cacheKeyToFileInfo = new Map();
+
 // Blob cache tracking per cache instance: Map<cacheInstance, Map<blob_key, blob_size>>
 // Similar structure to block cache
 let blobBlocksByInstance = new Map();
@@ -383,19 +388,41 @@ const modMap = {
     // Block cache events - passed through to visualizer
     'C': (line) => {
         // C+[N] <sst_file.sst> <offset> <size> <type> <key_hex>  - Block cache insert (N is optional cache instance)
+        // C+[N] - <size> <was_hit> <key_hex>                      - Block cache migration (filename is "-", lookup from key)
         // C- <key_hex> <was_hit>                                  - Block cache eviction (instance inferred from key)
         if (line.startsWith('C+')) {
-            // Match C+ or C+0, C+1, etc. followed by space
-            const match = /C\+(\d*) ([^ ]+) (\d+) (\d+) ([^ ]+) ([a-f0-9]+)/.exec(line);
-            if (!match) {
-                console.error(`Warning: Invalid C+ line format: ${line}`);
+            // First try normal insert format: C+[N] <filename> <offset> <size> <type> <key_hex>
+            let match = /C\+(\d*) ([^ ]+) (\d+) (\d+) ([^ ]+) ([a-f0-9]+)/.exec(line);
+            if (match) {
+                const [, cacheInstance, sstFile, offset, size, type, cacheKey] = match;
+                const blockSize = parseInt(size, 10);
+                const instanceId = cacheInstance || ''; // '' for default instance
+                getCacheInstance(instanceId).set(cacheKey, blockSize);
+                // Store file info for potential migration lookups
+                cacheKeyToFileInfo.set(cacheKey, { filename: sstFile, offset: parseInt(offset, 10), type });
+                cacheInsertCount++;
                 return;
             }
-            const [, cacheInstance, sstFile, offset, size, type, cacheKey] = match;
-            const blockSize = parseInt(size, 10);
-            const instanceId = cacheInstance || ''; // '' for default instance
-            getCacheInstance(instanceId).set(cacheKey, blockSize);
-            cacheInsertCount++;
+            
+            // Try migration format: C+[N] - <size> <was_hit> <key_hex>
+            // Used when block is migrated to secondary cache (no filename in log, use "-" placeholder)
+            match = /C\+(\d+) - (\d+) ([01]) ([a-f0-9]+)/.exec(line);
+            if (match) {
+                const [, cacheInstance, size, wasHit, cacheKey] = match;
+                const blockSize = parseInt(size, 10);
+                const instanceId = cacheInstance;
+                getCacheInstance(instanceId).set(cacheKey, blockSize);
+                // Lookup the original filename from our cache key map
+                const fileInfo = cacheKeyToFileInfo.get(cacheKey);
+                if (fileInfo) {
+                    // File info is already stored, we can use it for reporting
+                    // The migration is to a different cache instance but same file/offset
+                }
+                cacheInsertCount++;
+                return;
+            }
+            
+            console.error(`Warning: Invalid C+ line format: ${line}`);
         } else if (line.startsWith('C-')) {
             // C- <key_hex> <was_hit> - no instance number needed, infer from key
             const match = /C- ([a-f0-9]+) ([01])/.exec(line);
@@ -608,6 +635,7 @@ function main() {
     
     // Execute to validate and track cache usage per frame
     cacheBlocksByInstance.clear();
+    cacheKeyToFileInfo.clear();
     blobBlocksByInstance.clear();
     let frameIndex = 0;
     run.command_groups.forEach((group) => {
