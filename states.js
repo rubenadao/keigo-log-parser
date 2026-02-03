@@ -109,7 +109,7 @@ const readModsFromFile = (file) => {
         'meta': {
             'phases': phases,
             'tiers': ['NVME'],  // RocksDB tiers
-            'cache': true,      // Block cache events supported (C+/C-)
+            'cache': false,     // Block cache visualization disabled by default
             'labels': {
                 '-1': 0x808080, // other files - gray
                 '0': 0xFFFF00,  // L0 - yellow

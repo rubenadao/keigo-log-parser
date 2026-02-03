@@ -1,0 +1,55 @@
+# Rich Manifest Example
+# ======================
+# Produced by legokv-cli with full metadata.
+# Includes all optional extensions.
+
+schema_version: "1.0"
+generator: "legokv-cli"
+
+run:
+  name: "20260202_143000"
+  timestamp: "2026-02-02T14:30:00Z"
+  exit_code: 0
+  hostname: "cloud91"
+  duration_seconds: 552.5
+
+files:
+  output: "execution.log"
+  trace: "visual_profile.log"
+
+sampling:
+  cache: 100
+  blob_cache: 100
+
+variant:
+  name: "rocksdb-grpc-tiered:primary_first"
+  base: "rocksdb-grpc"
+  cache_type: "tiered_local_cache"
+  policy: "primary_first"
+
+workload:
+  name: "wkldc"
+  key_dist: "zipf99"
+  ops: 10000000
+
+phases:
+  - name: "loading"
+    output: "loading.log"
+    start_time: "2026-02-02T14:30:00Z"
+  - name: "execution"
+    output: "execution.log"
+    start_time: "2026-02-02T14:35:12Z"
+
+command:
+  executable: "/home/gsd/ruben/legokv-blockcache/rocksdb-grpc/db_bench"
+  args:
+    - "--benchmarks=ycsbwkldc"
+    - "--use_existing_db=1"
+    - "--num=1250000"
+    - "--duration=240"
+    - "--threads=8"
+    - "--cache_type=tiered_local_cache"
+    - "--tiered_cache_policy=primary_first"
+    - "--cache_size=1073741824"
+    - "--secondary_cache_size=536870912"
+    - "--visual_profile_cache_sampling_rate=100"

@@ -1,0 +1,31 @@
+# Manifest with Visual Profiling
+# ===============================
+# Produced by wrapper script when visual profiling IS enabled.
+# Includes trace file and sampling configuration.
+
+schema_version: "1.0"
+generator: "rocksdb-run-bench"
+
+run:
+  name: "profiled_experiment"
+  timestamp: "2026-02-02T14:30:00Z"
+  exit_code: 0
+  hostname: "workstation1"
+  duration_seconds: 245.3
+
+files:
+  output: "output.log"
+  trace: "visual_profile.log"
+
+sampling:
+  cache: 100
+  blob_cache: 100
+
+command:
+  executable: "/home/user/rocksdb/db_bench"
+  args:
+    - "--db=/tmp/mydb"
+    - "--benchmarks=ycsbwkldc"
+    - "--num=10000000"
+    - "--cache_size=1073741824"
+    - "--visual_profile_cache_sampling_rate=100"

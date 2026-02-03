@@ -1,0 +1,22 @@
+# Config for single-phase runs (execution only, no loading phase)
+# Use with: keigo-parser quick <dir> -o trace.json -c single-phase
+
+phases:
+  - "Execution"
+
+# RocksDB tier (single tier for standard RocksDB)
+tiers:
+  - name: NVME
+    patterns: []
+
+# LSM level colors
+labels:
+  "-1": 0x808080  # unknown - gray
+  "0": 0xFFFF00   # L0 - yellow
+  "1": 0x008000   # L1 - green
+  "2": 0x0000FF   # L2 - blue
+  "3": 0xFF8000   # L3 - orange
+  "4": 0xFF0000   # L4 - red
+  "5": 0xA020F0   # L5 - purple
+
+cache: true

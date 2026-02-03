@@ -1,0 +1,181 @@
+# Keigo Profiler Manifest Schema
+# ===============================
+# Version: 1.0
+#
+# This schema defines the format for manifest.yaml files that describe
+# benchmark run outputs. Producers (wrapper script, legokv-cli) generate
+# these files, and consumers (keigo-log-parser) read them.
+#
+# Design Principle: Only include fields that actually exist/apply.
+# No assumptions about build flags or features.
+
+schema_version: "1.0"
+
+# -----------------------------------------------------------------------------
+# FIELD DEFINITIONS
+# -----------------------------------------------------------------------------
+
+fields:
+
+  # === REQUIRED ===
+  
+  schema_version:
+    type: string
+    required: true
+    description: Version of this schema (e.g., "1.0")
+    example: "1.0"
+  
+  generator:
+    type: string
+    required: true
+    description: Tool that created this manifest
+    example: "rocksdb-run-bench"  # or "legokv-cli"
+  
+  run:
+    type: object
+    required: true
+    description: Basic run metadata
+    fields:
+      name:
+        type: string
+        required: true
+        description: Human-readable identifier for this run
+        example: "50M_tiered_experiment"
+      timestamp:
+        type: datetime
+        required: true
+        description: ISO 8601 timestamp when the run started
+        example: "2026-02-02T14:30:00Z"
+      exit_code:
+        type: integer
+        required: true
+        description: Exit code of the db_bench process (0 = success)
+        example: 0
+      hostname:
+        type: string
+        required: false
+        description: Machine hostname
+        example: "cloud91"
+      duration_seconds:
+        type: float
+        required: false
+        description: Total run duration in seconds
+        example: 312.5
+
+  files:
+    type: object
+    required: true
+    description: Files present in this results directory (relative paths)
+    fields:
+      output:
+        type: string
+        required: true
+        description: stdout/stderr capture from db_bench
+        example: "output.log"
+      trace:
+        type: string
+        required: false
+        description: Visual profiler trace (only if visual profiling enabled)
+        example: "visual_profile.log"
+      # Additional files can be added dynamically
+
+  # === OPTIONAL ===
+
+  sampling:
+    type: object
+    required: false
+    description: Sampling rates (only present if visual profiling enabled)
+    fields:
+      cache:
+        type: integer
+        required: false
+        description: Block cache sampling rate (1 in N operations logged)
+        default: 100
+        example: 100
+      blob_cache:
+        type: integer
+        required: false
+        description: Blob cache sampling rate
+        default: 100
+        example: 100
+
+  command:
+    type: object
+    required: false
+    description: The command that was executed (for reproducibility)
+    fields:
+      executable:
+        type: string
+        required: false
+        description: Path to db_bench binary
+        example: "/home/user/rocksdb/db_bench"
+      args:
+        type: array
+        items: string
+        required: false
+        description: All arguments passed to db_bench
+        example:
+          - "--db=/tmp/mydb"
+          - "--benchmarks=ycsbwkldc"
+          - "--num=10000000"
+
+  # === LEGOKV-CLI EXTENSIONS (optional) ===
+
+  variant:
+    type: object
+    required: false
+    description: LegoKV variant information (legokv-cli only)
+    fields:
+      name:
+        type: string
+        description: Full variant name
+        example: "rocksdb-grpc-tiered:primary_first"
+      base:
+        type: string
+        description: Base variant name
+        example: "rocksdb-grpc"
+      cache_type:
+        type: string
+        description: Cache implementation type
+        example: "tiered_local_cache"
+      policy:
+        type: string
+        description: Cache policy
+        example: "primary_first"
+
+  workload:
+    type: object
+    required: false
+    description: YCSB workload information (legokv-cli only)
+    fields:
+      name:
+        type: string
+        description: Workload identifier
+        example: "wkldc"
+      key_dist:
+        type: string
+        description: Key distribution
+        example: "zipf99"
+      ops:
+        type: integer
+        description: Number of operations
+        example: 10000000
+
+  phases:
+    type: array
+    required: false
+    description: Multi-phase run information (legokv-cli only)
+    items:
+      type: object
+      fields:
+        name:
+          type: string
+          description: Phase name
+          example: "execution"
+        output:
+          type: string
+          description: Phase output log file
+          example: "execution.log"
+        start_time:
+          type: datetime
+          description: Phase start timestamp

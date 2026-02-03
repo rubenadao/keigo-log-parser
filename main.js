@@ -41,13 +41,15 @@ Arguments:
   output_file  Path for the output JSON file (optional, defaults to stdout)
 
 Options:
-  --config <file>   YAML/JSON config file for tier patterns, labels, and phases
+  --config <file>      YAML/JSON config file for tier patterns, labels, and phases
   --phase <cfg> <log>  Phase data pair: config file and performance log file (repeatable)
+  --sampling-rate <n>  Cache sampling rate (default: auto-detect from phase files, or 100)
 
 Examples:
   node main.js trace.log                    # Output to stdout
   node main.js trace.log output.json        # Output to file
   node main.js trace.log output.json --config config.yaml
+  node main.js trace.log output.json --sampling-rate 100
   node main.js trace.log output.json --config config.yaml --phase loading.cfg loading.log
 `);
         process.exit(args.length === 0 ? 1 : 0);
@@ -56,6 +58,7 @@ Examples:
     let inputFile = null;
     let outputFile = null;
     let configFile = null;
+    let samplingRateOverride = null;
     const phaseFiles = []; // Array of { config: string, perfLog: string }
     
     let i = 0;
@@ -79,6 +82,18 @@ Examples:
             }
             configFile = args[i + 1];
             i += 2;
+        } else if (args[i] === '--sampling-rate') {
+            // Expect one argument after --sampling-rate
+            if (i + 1 >= args.length) {
+                console.error('Error: --sampling-rate requires a number');
+                process.exit(1);
+            }
+            samplingRateOverride = parseInt(args[i + 1], 10);
+            if (isNaN(samplingRateOverride) || samplingRateOverride <= 0) {
+                console.error('Error: --sampling-rate must be a positive integer');
+                process.exit(1);
+            }
+            i += 2;
         } else if (!inputFile) {
             inputFile = args[i];
             i++;
@@ -95,7 +110,8 @@ Examples:
         inputFile,
         outputFile: outputFile || null,
         configFile,
-        phaseFiles
+        phaseFiles,
+        samplingRateOverride
     };
 }
 
@@ -580,7 +596,7 @@ function applyTierPatterns(sequences) {
 
 // Main execution
 function main() {
-    const { inputFile, outputFile, configFile, phaseFiles } = parseArgs();
+    const { inputFile, outputFile, configFile, phaseFiles, samplingRateOverride } = parseArgs();
     
     // Check input file exists
     if (!fs.existsSync(inputFile)) {
@@ -609,10 +625,18 @@ function main() {
     
     // Read phase files and sampling rate if provided
     let samplingRate = 100; // Default
+    if (samplingRateOverride) {
+        // CLI override takes priority (from manifest or explicit flag)
+        samplingRate = samplingRateOverride;
+        console.error(`Using sampling rate from CLI: ${samplingRate}`);
+    }
     if (phaseFiles.length > 0) {
         console.error(`Reading ${phaseFiles.length} phase file pair(s)`);
         data.phaseData = readPhaseFiles(phaseFiles);
-        samplingRate = readSamplingRate(phaseFiles);
+        if (!samplingRateOverride) {
+            // Only read from phase files if not overridden
+            samplingRate = readSamplingRate(phaseFiles);
+        }
     }
     
     // Build command groups for validation and track cache usage
@@ -798,13 +822,22 @@ function main() {
         }
         
         // Override phase names from config
+        // If config provides phases, use them to either:
+        // 1. Rename existing phases (if same count)
+        // 2. Replace all phases (if config specifies single phase, treat whole trace as one phase)
         if (vizConfig.phases) {
-            const phaseIndices = Object.keys(data.meta.phases).sort((a, b) => parseInt(a) - parseInt(b));
-            phaseIndices.forEach((idx, i) => {
-                if (vizConfig.phases[i]) {
-                    data.meta.phases[idx] = vizConfig.phases[i];
-                }
-            });
+            if (vizConfig.phases.length === 1) {
+                // Single phase config: treat entire trace as one phase
+                data.meta.phases = { "1": vizConfig.phases[0] };
+            } else {
+                // Multiple phases: rename detected phases
+                const phaseIndices = Object.keys(data.meta.phases).sort((a, b) => parseInt(a) - parseInt(b));
+                phaseIndices.forEach((idx, i) => {
+                    if (vizConfig.phases[i]) {
+                        data.meta.phases[idx] = vizConfig.phases[i];
+                    }
+                });
+            }
         }
         
         // Override cache setting from config

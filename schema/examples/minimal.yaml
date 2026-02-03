@@ -1,0 +1,21 @@
+# Minimal Manifest Example
+# =========================
+# Produced by wrapper script when visual profiling is NOT enabled.
+# This is the smallest valid manifest.
+
+schema_version: "1.0"
+generator: "rocksdb-run-bench"
+
+run:
+  name: "baseline_test"
+  timestamp: "2026-02-02T14:30:00Z"
+  exit_code: 0
+
+files:
+  output: "output.log"
+
+command:
+  args:
+    - "--db=/tmp/mydb"
+    - "--benchmarks=readrandom"
+    - "--num=1000000"

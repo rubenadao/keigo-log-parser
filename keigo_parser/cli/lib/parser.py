@@ -5,11 +5,14 @@ Parser wrapper for keigo-log-parser Node.js script.
 import subprocess
 import json
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from .common import (
     get_parser_dir, get_configs_dir, log_info, log_error, log_success, check_node
 )
+
+if TYPE_CHECKING:
+    from .manifest import ManifestData
 
 
 def get_config_path(config: Path | str) -> Path:
@@ -74,6 +77,7 @@ def run_parser(
     phases: Optional[List[Tuple[Path, Path]]] = None,
     name: Optional[str] = None,
     stdout: bool = False,
+    manifest: Optional['ManifestData'] = None,
 ) -> Tuple[bool, Optional[Path]]:
     """
     Run the keigo-log-parser on a trace log file.
@@ -85,6 +89,7 @@ def run_parser(
         phases: List of (config_file, perf_log_file) tuples
         name: Trace name for auto-generated output filename
         stdout: If True, output to stdout instead of file
+        manifest: Parsed manifest data (optional, for sampling rate)
         
     Returns:
         Tuple of (success: bool, output_path: Path or None)
@@ -134,6 +139,10 @@ def run_parser(
         for config, perf_log in phases:
             cmd.extend(['--phase', str(config), str(perf_log)])
     
+    # Add sampling rate from manifest if provided
+    if manifest and manifest.cache_sampling_rate is not None:
+        cmd.extend(['--sampling-rate', str(manifest.cache_sampling_rate)])
+
     if not stdout:
         log_info(f"Parsing [cyan]{input_file.name}[/] → [cyan]{final_output.name}[/]")
     
