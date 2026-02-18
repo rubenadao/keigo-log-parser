@@ -24,7 +24,7 @@ try {
 // Visualization config loaded from --config file
 let vizConfig = null;
 const { Sst, Tier, Run } = require('./structs');
-const { readModsFromFile } = require('./states');
+const { readModsFromFile, readModsFromFileStreaming } = require('./states');
 
 // Parse command line arguments
 function parseArgs() {
@@ -41,15 +41,17 @@ Arguments:
   output_file  Path for the output JSON file (optional, defaults to stdout)
 
 Options:
-  --config <file>      YAML/JSON config file for tier patterns, labels, and phases
-  --phase <cfg> <log>  Phase data pair: config file and performance log file (repeatable)
-  --sampling-rate <n>  Cache sampling rate (default: auto-detect from phase files, or 100)
+  --config <file>           YAML/JSON config file for tier patterns, labels, and phases
+  --phase <cfg> <log>       Phase data pair: config file and performance log file (repeatable)
+  --sampling-rate <n>       Cache sampling rate (default: auto-detect from phase files, or 100)
+  --sequence-sample <n>     Keep every Nth sequence (e.g., 10 = 10% of frames)
 
 Examples:
   node main.js trace.log                    # Output to stdout
   node main.js trace.log output.json        # Output to file
   node main.js trace.log output.json --config config.yaml
   node main.js trace.log output.json --sampling-rate 100
+  node main.js trace.log output.json --sequence-sample 10  # Keep 10% of frames
   node main.js trace.log output.json --config config.yaml --phase loading.cfg loading.log
 `);
         process.exit(args.length === 0 ? 1 : 0);
@@ -59,6 +61,7 @@ Examples:
     let outputFile = null;
     let configFile = null;
     let samplingRateOverride = null;
+    let sequenceSample = null;
     const phaseFiles = []; // Array of { config: string, perfLog: string }
     
     let i = 0;
@@ -94,6 +97,18 @@ Examples:
                 process.exit(1);
             }
             i += 2;
+        } else if (args[i] === '--sequence-sample') {
+            // Expect one argument after --sequence-sample
+            if (i + 1 >= args.length) {
+                console.error('Error: --sequence-sample requires a number');
+                process.exit(1);
+            }
+            sequenceSample = parseInt(args[i + 1], 10);
+            if (isNaN(sequenceSample) || sequenceSample <= 0) {
+                console.error('Error: --sequence-sample must be a positive integer');
+                process.exit(1);
+            }
+            i += 2;
         } else if (!inputFile) {
             inputFile = args[i];
             i++;
@@ -111,7 +126,8 @@ Examples:
         outputFile: outputFile || null,
         configFile,
         phaseFiles,
-        samplingRateOverride
+        samplingRateOverride,
+        sequenceSample
     };
 }
 
@@ -507,7 +523,7 @@ const modMap = {
 };
 
 // Process sequences to handle hit resets
-function processSequences(sequences) {
+function processSequences(sequences, showProgress = false) {
     function extractHits(mods) {
         const hits = new Set();
         mods.forEach(mod => {
@@ -521,8 +537,13 @@ function processSequences(sequences) {
 
     const processedSequences = [];
     let previousHits = new Set();
+    const total = sequences.length;
+    const progressInterval = Math.max(1, Math.floor(total / 100));
 
-    sequences.forEach(seq => {
+    sequences.forEach((seq, i) => {
+        if (showProgress && i % progressInterval === 0) {
+            process.stderr.write(`\rProcessing hits: ${Math.floor((i / total) * 100)}%`);
+        }
         const currentHits = extractHits(seq.mods);
         previousHits.forEach(sst => {
             if (!currentHits.has(sst)) {
@@ -533,6 +554,10 @@ function processSequences(sequences) {
         previousHits = currentHits;
     });
 
+    if (showProgress) {
+        process.stderr.write(`\rProcessing hits: 100%\n`);
+    }
+
     return processedSequences;
 }
 
@@ -540,12 +565,18 @@ function processSequences(sequences) {
  * Rewrite trace lines to apply tier patterns from config.
  * This modifies 'o' and 'm' commands to use the tier determined by regex patterns.
  */
-function applyTierPatterns(sequences) {
+function applyTierPatterns(sequences, showProgress = false) {
     if (!vizConfig || !vizConfig.tiers) {
         return sequences;
     }
     
-    return sequences.map(seq => {
+    const total = sequences.length;
+    const progressInterval = Math.max(1, Math.floor(total / 100));
+    
+    const result = sequences.map((seq, i) => {
+        if (showProgress && i % progressInterval === 0) {
+            process.stderr.write(`\rApplying tiers: ${Math.floor((i / total) * 100)}%`);
+        }
         const newMods = seq.mods.map(mod => {
             // Match 'o' command: o <filename> <tier> [l<label>]
             let match = /^o ([^ ]+) (\d+)(?: l([^ ]+))?$/.exec(mod);
@@ -592,11 +623,17 @@ function applyTierPatterns(sequences) {
         
         return { ...seq, mods: newMods };
     });
+    
+    if (showProgress) {
+        process.stderr.write(`\rApplying tiers: 100%\n`);
+    }
+    
+    return result;
 }
 
 // Main execution
-function main() {
-    const { inputFile, outputFile, configFile, phaseFiles, samplingRateOverride } = parseArgs();
+async function main() {
+    const { inputFile, outputFile, configFile, phaseFiles, samplingRateOverride, sequenceSample } = parseArgs();
     
     // Check input file exists
     if (!fs.existsSync(inputFile)) {
@@ -611,15 +648,22 @@ function main() {
     
     console.error(`Parsing: ${inputFile}`);
     
-    // Read and parse the trace file
-    const data = readModsFromFile(inputFile);
+    // Read and parse the trace file using streaming (supports large files)
+    const data = await readModsFromFileStreaming(inputFile, true);
     let modSeqs = data.sequences;
     
-    // Process sequences
-    modSeqs = processSequences(modSeqs);
+    // Apply sequence sampling if requested (keep every Nth sequence)
+    if (sequenceSample && sequenceSample > 1) {
+        const originalCount = modSeqs.length;
+        modSeqs = modSeqs.filter((_, idx) => idx % sequenceSample === 0);
+        console.error(`Sequence sampling: keeping every ${sequenceSample}th frame (${originalCount} → ${modSeqs.length})`);
+    }
+    
+    // Process sequences (with progress)
+    modSeqs = processSequences(modSeqs, true);
     
     // Apply tier patterns from config (rewrites trace lines)
-    modSeqs = applyTierPatterns(modSeqs);
+    modSeqs = applyTierPatterns(modSeqs, true);
     
     data.sequences = modSeqs;
     
@@ -638,6 +682,8 @@ function main() {
             samplingRate = readSamplingRate(phaseFiles);
         }
     }
+    
+    console.error(`Validating sequences...`);
     
     // Build command groups for validation and track cache usage
     const run = new Run();
@@ -662,8 +708,16 @@ function main() {
     cacheKeyToFileInfo.clear();
     blobBlocksByInstance.clear();
     let frameIndex = 0;
-    run.command_groups.forEach((group) => {
+    const totalFrames = run.command_groups.length;
+    const frameProgressInterval = Math.max(1, Math.floor(totalFrames / 100));
+    
+    run.command_groups.forEach((group, i) => {
         group.forEach((command) => command());
+        
+        // Progress every 1%
+        if (i % frameProgressInterval === 0) {
+            process.stderr.write(`\rValidating: ${Math.floor((i / totalFrames) * 100)}%`);
+        }
         
         // Calculate cache usage at end of frame for each known instance
         // First, ensure all instances have an entry up to this frame
@@ -741,6 +795,8 @@ function main() {
         
         frameIndex++;
     });
+    
+    process.stderr.write(`\rValidating: 100%\n`);
     
     // Build cache usage output
     // If only default instance exists, use simple format for backwards compatibility
@@ -846,17 +902,86 @@ function main() {
         }
     }
     
-    // Output
-    const jsonOutput = JSON.stringify(data, null, 2);
-    
+    // Output - use streaming for large files to avoid string length limits
     if (outputFile) {
-        fs.writeFileSync(outputFile, jsonOutput);
+        await writeJsonStreaming(outputFile, data);
         console.error(`Output written to: ${outputFile}`);
     } else {
+        // For stdout, try regular stringify (may fail on huge files)
+        const jsonOutput = JSON.stringify(data, null, 2);
         console.log(jsonOutput);
     }
     
     console.error(`Processed ${modSeqs.length} sequences`);
 }
 
-main();
+/**
+ * Write JSON to file using streaming to avoid string length limits.
+ * Manually constructs JSON output, streaming sequences array incrementally.
+ */
+async function writeJsonStreaming(outputPath, data) {
+    const stream = fs.createWriteStream(outputPath, { encoding: 'utf8' });
+    
+    const write = (str) => new Promise((resolve, reject) => {
+        const ok = stream.write(str);
+        if (ok) resolve();
+        else stream.once('drain', resolve);
+    });
+    
+    // Write opening brace and meta
+    await write('{\n');
+    await write('  "meta": ' + JSON.stringify(data.meta, null, 2).split('\n').join('\n  ') + ',\n');
+    
+    // Write phaseData if present
+    if (data.phaseData) {
+        await write('  "phaseData": ' + JSON.stringify(data.phaseData, null, 2).split('\n').join('\n  ') + ',\n');
+    }
+    
+    // Write cacheUsage if present
+    if (data.cacheUsage) {
+        await write('  "cacheUsage": ' + JSON.stringify(data.cacheUsage, null, 2).split('\n').join('\n  ') + ',\n');
+    }
+    
+    // Write blobCacheUsage if present
+    if (data.blobCacheUsage) {
+        await write('  "blobCacheUsage": ' + JSON.stringify(data.blobCacheUsage, null, 2).split('\n').join('\n  ') + ',\n');
+    }
+    
+    // Stream sequences array
+    await write('  "sequences": [\n');
+    
+    const sequences = data.sequences;
+    const total = sequences.length;
+    const progressInterval = Math.max(1, Math.floor(total / 100));
+    
+    for (let i = 0; i < total; i++) {
+        const seq = sequences[i];
+        const seqJson = JSON.stringify(seq, null, 2).split('\n').map(line => '    ' + line).join('\n');
+        
+        if (i < total - 1) {
+            await write(seqJson + ',\n');
+        } else {
+            await write(seqJson + '\n');
+        }
+        
+        // Progress every 1%
+        if (i % progressInterval === 0) {
+            process.stderr.write(`\rWriting JSON: ${Math.floor((i / total) * 100)}%`);
+        }
+    }
+    
+    process.stderr.write(`\rWriting JSON: 100%\n`);
+    
+    await write('  ]\n');
+    await write('}\n');
+    
+    // Close stream
+    await new Promise((resolve, reject) => {
+        stream.end(resolve);
+    });
+}
+
+main().catch(err => {
+    console.error('Error:', err.message);
+    process.exit(1);
+});

@@ -11,7 +11,7 @@ class ModSequence {
     //first comes "o", then "s" (size), then "m", then "l", then "h", then "e", then "u", 
     // Block cache events (C+/C-) come after file I/O (#/!) but before frame end
     compare(a, b) {
-        const order = "osmlheu#!C"; // Custom order
+        const order = "osmlheu#!CB"; // Custom order (C = block cache, B = blob cache)
         // Only compare the first character (line type) - return 0 for same type
         // to preserve original order via stable sort
         const indexA = order.indexOf(a[0]);
@@ -27,7 +27,125 @@ class ModSequence {
 }
 
 
+/**
+ * Build metadata object from phase indices
+ */
+function buildMeta(phaseIndices) {
+    const phases = {};
+    phaseIndices.forEach((frameIndex, i) => {
+        phases[frameIndex.toString()] = `PHASE${i}`;
+    });
+    
+    // If no phases were found, default to PHASE0 at frame 0
+    if (Object.keys(phases).length === 0) {
+        phases["0"] = "PHASE0";
+    }
 
+    return {
+        'phases': phases,
+        'tiers': ['NVME'],  // RocksDB tiers
+        'cache': false,     // Block cache visualization disabled by default
+        'labels': {
+            '-1': 0x808080, // other files - gray
+            '0': 0xFFFF00,  // L0 - yellow
+            '1': 0x008000,  // L1 - green
+            '2': 0x0000FF,  // L2 - blue
+            '3': 0xFF8000,  // L3 - orange
+            '4': 0xFF0000,  // L4 - red
+            '5': 0xA020F0   // L5 - purple
+        }
+    };
+}
+
+
+/**
+ * Streaming version - reads file line by line without loading entire file into memory.
+ * Supports files of any size (tested with 529MB+).
+ * 
+ * @param {string} file - Path to the trace log file
+ * @param {boolean} showProgress - Show progress indicator (line count)
+ * @returns {Promise<{meta: object, sequences: ModSequence[]}>}
+ */
+async function readModsFromFileStreaming(file, showProgress = false) {
+    const modSequences = [];
+    let modSeq = new ModSequence();
+    const phaseIndices = [];
+    let frameCount = 0;
+    let prevLineWasPhaseMarker = false;
+    let lineCount = 0;
+
+    const stream = fs.createReadStream(file, { encoding: 'utf8', highWaterMark: 64 * 1024 });
+    const rl = readline.createInterface({ 
+        input: stream, 
+        crlfDelay: Infinity 
+    });
+
+    for await (const rawLine of rl) {
+        lineCount++;
+        
+        // Progress indicator every 1M lines
+        if (showProgress && lineCount % 1000000 === 0) {
+            process.stderr.write(`\rProcessed ${(lineCount / 1000000).toFixed(0)}M lines...`);
+        }
+
+        const line = rawLine.trim();
+        
+        // Phase marker detection (single pass)
+        if (line === '.') {
+            phaseIndices.push(frameCount);
+            prevLineWasPhaseMarker = true;
+            continue;
+        }
+        
+        // Skip the "---" that follows a phase marker
+        if (prevLineWasPhaseMarker && line === '---') {
+            prevLineWasPhaseMarker = false;
+            continue;
+        }
+        prevLineWasPhaseMarker = false;
+
+        // Frame delimiter
+        if (line === '---') {
+            modSeq.sort();
+            modSequences.push(modSeq);
+            modSeq = new ModSequence();
+            frameCount++;
+            continue;
+        }
+
+        // Skip empty lines
+        if (line === '') {
+            continue;
+        }
+
+        // Add modification to current sequence
+        modSeq.mods.push(rawLine);
+    }
+
+    // Push final sequence if it has content
+    if (modSeq.mods.length > 0) {
+        modSeq.sort();
+        modSequences.push(modSeq);
+    }
+
+    if (showProgress) {
+        process.stderr.write(`\rProcessed ${lineCount} lines total\n`);
+    }
+
+    return {
+        'meta': buildMeta(phaseIndices),
+        'sequences': modSequences
+    };
+}
+
+
+/**
+ * Legacy synchronous version - kept for backwards compatibility with small files.
+ * WARNING: Will crash on files >512MB due to Node.js string length limit.
+ * 
+ * @param {string} file - Path to the trace log file
+ * @returns {{meta: object, sequences: ModSequence[]}}
+ */
 const readModsFromFile = (file) => {
 
     let modSequences = [];
@@ -93,38 +211,14 @@ const readModsFromFile = (file) => {
         modSequences.push(modSeq);
     }
 
-    // Build phases object from the detected phase indices
-    // Each phase is named PHASE1, PHASE2, etc.
-    const phases = {};
-    phaseIndices.forEach((frameIndex, i) => {
-        phases[frameIndex.toString()] = `PHASE${i}`;
-    });
-    
-    // If no phases were found, default to PHASE1 at frame 0
-    if (Object.keys(phases).length === 0) {
-        phases["0"] = "PHASE0";
-    }
-
     return {
-        'meta': {
-            'phases': phases,
-            'tiers': ['NVME'],  // RocksDB tiers
-            'cache': false,     // Block cache visualization disabled by default
-            'labels': {
-                '-1': 0x808080, // other files - gray
-                '0': 0xFFFF00,  // L0 - yellow
-                '1': 0x008000,  // L1 - green
-                '2': 0x0000FF,  // L2 - blue
-                '3': 0xFF8000,  // L3 - orange
-                '4': 0xFF0000,  // L4 - red
-                '5': 0xA020F0   // L5 - purple
-            }
-        },
+        'meta': buildMeta(phaseIndices),
         'sequences': modSequences
     };
 }
 
 module.exports = {
     ModSequence,
-    readModsFromFile
+    readModsFromFile,
+    readModsFromFileStreaming
 };

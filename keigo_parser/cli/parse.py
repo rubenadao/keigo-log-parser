@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 
 import click
 
-from .lib.common import log_info, log_error, log_success, resolve_output_path
+from .lib.common import log_info, log_error, log_success
 from .lib.parser import run_parser
 
 
@@ -26,16 +26,17 @@ class PhaseType(click.ParamType):
 
 @click.command('parse')
 @click.argument('input_file', type=click.Path(exists=True, path_type=Path))
-@click.argument('output_file', type=click.Path(path_type=Path), required=False, default=None)
+@click.option('-o', '--output', 'output_file', type=click.Path(path_type=Path), default=None,
+              help='Output JSON file path (default: <input_stem>.json in current directory)')
 @click.option('-c', '--config', 'config_file', type=str,
               help='YAML/JSON config file or catalog name (e.g., "rocksdb", "wiredtiger")')
 @click.option('-p', '--phase', 'phases', nargs=2, type=click.Path(exists=True, path_type=Path),
               multiple=True, metavar='CONFIG PERF_LOG',
               help='Phase data: config file and performance log (can be repeated)')
 @click.option('-n', '--name', 'trace_name', type=str, default=None,
-              help='Trace name (used for output filename if output not specified)')
-@click.option('-o', '--output-dir', type=click.Path(path_type=Path), default=None,
-              help='Output directory (default: current directory)')
+              help='Trace name (used for output filename if -o not specified)')
+@click.option('-s', '--sample', 'sequence_sample', type=int, default=None,
+              help='Keep every Nth sequence/frame (e.g., 10 = 10%% of frames)')
 @click.option('--stdout', is_flag=True, default=False,
               help='Output to stdout instead of file')
 def parse(
@@ -44,7 +45,7 @@ def parse(
     config_file: Optional[str],
     phases: Tuple[Tuple[Path, Path], ...],
     trace_name: Optional[str],
-    output_dir: Optional[Path],
+    sequence_sample: Optional[int],
     stdout: bool,
 ) -> None:
     """Parse RocksDB trace log into JSON for visualization.
@@ -52,7 +53,6 @@ def parse(
     \b
     Arguments:
       INPUT_FILE   Path to the visual_profile.log file
-      OUTPUT_FILE  Optional path for output JSON (auto-generated if not provided)
     
     \b
     Config File:
@@ -85,7 +85,10 @@ def parse(
           -p 50M/run_config_execution.txt 50M/execution.log
       
       # Parse to specific output file
-      keigo-parser parse trace.log /tmp/output.json
+      keigo-parser parse trace.log -o /tmp/output.json
+      
+      # Parse with sampling (10% of frames for large traces)
+      keigo-parser parse trace.log -o sampled.json -s 10
       
       # Output to stdout (for piping)
       keigo-parser parse trace.log --stdout
@@ -93,17 +96,16 @@ def parse(
     # Determine output file path
     if stdout:
         final_output = None
+    elif output_file:
+        final_output = output_file
     else:
-        final_output = resolve_output_path(
-            output_file=output_file,
-            output_dir=output_dir,
-            trace_name=trace_name,
-            input_file=input_file,
-        )
-        
-        # Ensure output directory exists
-        if final_output:
-            final_output.parent.mkdir(parents=True, exist_ok=True)
+        # Auto-generate output filename
+        name = trace_name if trace_name else input_file.stem
+        final_output = Path.cwd() / f"{name}.json"
+    
+    # Ensure output directory exists
+    if final_output:
+        final_output.parent.mkdir(parents=True, exist_ok=True)
     
     # Run the parser
     success, output_path = run_parser(
@@ -112,6 +114,7 @@ def parse(
         config_file=config_file,
         phases=list(phases) if phases else None,
         name=trace_name,
+        sequence_sample=sequence_sample,
         stdout=stdout,
     )
     
