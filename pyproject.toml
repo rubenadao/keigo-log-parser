@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-keigo-parser = "keigo_parser.cli.main:cli"
+keigo-parser = "cli.main:cli"
 
 [project.optional-dependencies]
 dev = [
@@ -28,4 +28,4 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["keigo_parser*"]
+include = ["cli*"]
